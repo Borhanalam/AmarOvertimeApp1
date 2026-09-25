@@ -1,69 +1,97 @@
-name: Build Amar Overtime APK
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.Duration
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ "main" ]
+enum class ShiftType {
+    DAY, NIGHT
+}
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+data class DutyResult(
+    val totalHours: Double,
+    val regularHours: Double,
+    val otHours: Double
+)
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+object DynamicOvertimeCalculator {
 
-    - name: Find and extract Android project ZIP
-      shell: bash
-      run: |
-        set -e
-        ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
-
-        if [ -z "$ZIP_FILE" ]; then
-          echo "No Android project ZIP found."
-          exit 1
-        fi
-
-        mkdir -p android-src
-        unzip -q "$ZIP_FILE" -d android-src
-
-        if [ -f android-src/AmarOvertimeAndroid/settings.gradle ]; then
-          PROJECT_DIR=android-src/AmarOvertimeAndroid
-        elif [ -f android-src/settings.gradle ]; then
-          PROJECT_DIR=android-src
-        else
-          PROJECT_DIR="$(find android-src -name settings.gradle -type f -print -quit | xargs -r dirname)"
-        fi
-
-        if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
-          echo "Could not find Android project settings.gradle."
-          exit 1
-        fi
-
-        echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-        echo "Android project: $PROJECT_DIR"
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: '17'
-
-    - name: Set up Gradle
-      uses: gradle/actions/setup-gradle@v3
-
-    - name: Grant execute permission for gradlew
-      working-directory: ${{ env.PROJECT_DIR }}
-      run: chmod +x gradlew || true
-
-    - name: Build debug APK
-      working-directory: ${{ env.PROJECT_DIR }}
-      run: ./gradlew assembleDebug || gradle assembleDebug
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: AmarOvertime-debug-apk
-        path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
-        if-no-files-found: error
+    /**
+     * যেকোনো সময় ইন/আউট এবং ডে/নাইট শিফটের জন্য ওভারটাইম হিসাবের ফাংশন
+     * 
+     * @param startDateTime কাজ শুরুর তারিখ ও সময়
+     * @param endDateTime কাজ শেষের তারিখ ও সময় (যেকোনো সময় হতে পারে)
+     * @param shiftType DAY অথবা NIGHT শিফট
+     */
+    fun calculateOvertime(
+        startDateTime: LocalDateTime,
+        endDateTime: LocalDateTime,
+        shiftType: ShiftType
+    ): DutyResult {
         
+        // মোট কাজের সময় (ঘণ্টায়)
+        val totalMinutes = Duration.between(startDateTime, endDateTime).toMinutes()
+        val totalHours = totalMinutes / 60.0
+
+        // শিফট অনুযায়ী ওভারটাইম শুরু হওয়ার নির্দিষ্ট সময় (OT Threshold Time)
+        val otThresholdTime: LocalTime = if (shiftType == ShiftType.DAY) {
+            LocalTime.of(17, 0) // ডে ডিউটি: বিকেল ৫:০০ টা (17:00)
+        } else {
+            LocalTime.of(4, 0)  // নাইট ডিউটি: ভোর ৪:০০ টা (04:00)
+        }
+
+        // OT শুরু হওয়ার তারিখ ও সময় নির্ধারণ
+        var otThresholdDateTime = startDateTime.toLocalDate().atTime(otThresholdTime)
+
+        // যদি নাইট ডিউটি হয় এবং OT Threshold (ভোর ৪:০০) পরদিনের মধ্যে পড়ে
+        if (shiftType == ShiftType.NIGHT && otThresholdTime.isBefore(startDateTime.toLocalTime())) {
+            otThresholdDateTime = otThresholdDateTime.plusDays(1)
+        }
+        
+        // যদি ডে ডিউটি রাতেই শুরু হয় আর ভোর ৪টায় OT হয়
+        if (shiftType == ShiftType.DAY && endDateTime.isBefore(otThresholdDateTime)) {
+             // সাধারণ কভার-আপ
+        }
+
+        // ওভারটাইম সময় গণনা
+        val otMinutes = if (endDateTime.isAfter(otThresholdDateTime)) {
+            val startForOt = if (startDateTime.isAfter(otThresholdDateTime)) startDateTime else otThresholdDateTime
+            Duration.between(startForOt, endDateTime).toMinutes()
+        } else {
+            0L
+        }
+
+        val otHours = (otMinutes / 60.0).coerceAtLeast(0.0)
+        val regularHours = (totalHours - otHours).coerceAtLeast(0.0)
+
+        return DutyResult(
+            totalHours = String.format("%.2f", totalHours).toDouble(),
+            regularHours = String.format("%.2f", regularHours).toDouble(),
+            otHours = String.format("%.2f", otHours).toDouble()
+        )
+    }
+}
+
+// --- টেস্ট করার উদাহরণ ---
+fun main() {
+    // উদাহরণ ১: ডে ডিউটি (সকাল ৮:০০ টা থেকে রাত ১২:৪৫ AM)
+    // বিকেল ৫:০০ টা পর্যন্ত রেগুলার, এরপর ৭.৭৫ ঘণ্টা (৭ ঘণ্টা ৪৫ মি) OT
+    val dayStart = LocalDateTime.of(2026, 9, 25, 8, 0)
+    val dayEnd = LocalDateTime.of(2026, 9, 26, 0, 45) // রাত ১২:৪৫ AM
+
+    val dayResult = DynamicOvertimeCalculator.calculateOvertime(dayStart, dayEnd, ShiftType.DAY)
+    println("--- ডে ডিউটি টেস্ট ---")
+    println("মোট ঘণ্টা: ${dayResult.totalHours}")       // ১৬.৭৫ ঘণ্টা
+    println("রেগুলার ঘণ্টা: ${dayResult.regularHours}") // ৯.০০ ঘণ্টা (৮:০০ থেকে ১৭:০০)
+    println("ওভারটাইম ঘণ্টা: ${dayResult.otHours}")     // ৭.৭৫ ঘণ্টা (১৭:০০ থেকে ০০:৪৫)
+
+    // উদাহরণ ২: নাইট ডিউটি (রাত ৮:০০ PM থেকে সকাল ৯:২১ AM)
+    // ভোর ৪:০০ টা পর্যন্ত রেগুলার, এরপর ৫.৩৫ ঘণ্টা (৫ ঘণ্টা ২১ মি) OT
+    val nightStart = LocalDateTime.of(2026, 9, 25, 20, 0)
+    val nightEnd = LocalDateTime.of(2026, 9, 26, 9, 21) // সকাল ৯:২১ AM
+
+    val nightResult = DynamicOvertimeCalculator.calculateOvertime(nightStart, nightEnd, ShiftType.NIGHT)
+    println("\n--- নাইট ডিউটি টেস্ট ---")
+    println("মোট ঘণ্টা: ${nightResult.totalHours}")       // ১৩.৩৫ ঘণ্টা
+    println("রেগুলার ঘণ্টা: ${nightResult.regularHours}") // ৮.০০ ঘণ্টা (২০:০০ থেকে ৪:০০)
+    println("ওভারটাইম ঘণ্টা: ${nightResult.otHours}")     // ৫.৩৫ ঘণ্টা (৪:০০ থেকে ৯:২১)
+}
+
