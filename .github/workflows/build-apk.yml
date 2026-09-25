@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK from ZIP
 
 on:
   push:
@@ -13,6 +13,25 @@ jobs:
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+
+    - name: Find and Extract ZIP Project
+      run: |
+        ZIP_FILE=$(find . -maxdepth 2 -type f -name "*.zip" | head -n 1)
+        if [ -n "$ZIP_FILE" ]; then
+          echo "Found zip file: $ZIP_FILE"
+          unzip -o "$ZIP_FILE" -d extracted_project
+          
+          # Check if project files are inside a subfolder inside ZIP
+          if [ -d "extracted_project/AmarOvertimeAndroid" ]; then
+            cp -r extracted_project/AmarOvertimeAndroid/* .
+          elif [ -d "extracted_project/AmarOvertimeAndroid-main" ]; then
+            cp -r extracted_project/AmarOvertimeAndroid-main/* .
+          else
+            cp -r extracted_project/* .
+          fi
+        else
+          echo "No zip file found, proceeding with repository files."
+        fi
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
